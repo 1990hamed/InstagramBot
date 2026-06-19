@@ -7,8 +7,6 @@
   detect who unfollowed in the last 24 hours.
 """
 
-from datetime import datetime, timedelta
-
 import pandas as pd
 
 from instabot.instagram.client import InstagramClient
@@ -66,11 +64,17 @@ def classify_users(ig: InstagramClient) -> dict:
 
 
 def get_leavers() -> dict:
-    """Detect followers who left within the last 24 hours and persist them.
+    """Detect unfollowers by diffing the two most recent follower snapshots.
+
+    Each pipeline run records a complete follower snapshot (see
+    ``Collector.fetch_followers``). Unfollowers are whoever appeared in the
+    previous snapshot but not in the latest one. This is robust to re-follows
+    and does not depend on a fixed 24h window — it compares actual successive
+    snapshots, however far apart they were taken.
 
     Returns a summary with the unfollower count and usernames.
     """
-    logger.info("Detecting unfollowers over the last 24h.")
+    logger.info("Detecting unfollowers from the last two snapshots.")
     follower_df = csv_store.read_followers()
     if follower_df.empty:
         logger.warning("No follower history yet; cannot detect unfollowers.")
@@ -78,20 +82,29 @@ def get_leavers() -> dict:
         return {"unfollower_count": 0, "unfollower_usernames": []}
 
     follower_df["timestamp"] = pd.to_datetime(follower_df["timestamp"])
-    one_day_ago = datetime.now() - timedelta(days=1)
+    snapshots = sorted(follower_df["timestamp"].unique())
+    if len(snapshots) < 2:
+        logger.info("Only one snapshot so far; no previous snapshot to diff.")
+        empty = follower_df.iloc[0:0]
+        csv_store.write_unfollowers(empty)
+        return {"unfollower_count": 0, "unfollower_usernames": []}
 
-    recent_followers = set(
-        follower_df[follower_df["timestamp"] > one_day_ago]["follower_id"]
-    )
-    old_followers = set(
-        follower_df[follower_df["timestamp"] <= one_day_ago]["follower_id"]
-    )
+    previous_ts, latest_ts = snapshots[-2], snapshots[-1]
+    previous = follower_df[follower_df["timestamp"] == previous_ts]
+    latest_ids = set(follower_df[follower_df["timestamp"] == latest_ts]["follower_id"])
 
-    leavers = old_followers.difference(recent_followers)
-    unfollower_df = follower_df[follower_df["follower_id"].isin(leavers)]
+    leavers = set(previous["follower_id"]).difference(latest_ids)
+    unfollower_df = previous[previous["follower_id"].isin(leavers)].reset_index(
+        drop=True
+    )
 
     csv_store.write_unfollowers(unfollower_df)
-    logger.info("Detected %d unfollower(s) in the last 24h.", len(unfollower_df))
+    logger.info(
+        "Detected %d unfollower(s) between %s and %s.",
+        len(unfollower_df),
+        previous_ts,
+        latest_ts,
+    )
 
     return {
         "unfollower_count": len(unfollower_df),
