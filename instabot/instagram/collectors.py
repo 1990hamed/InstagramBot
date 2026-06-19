@@ -27,40 +27,47 @@ class Collector:
     def _user_id(self) -> str:
         return str(self.client.user_id_from_username(self.username))
 
-    def fetch_followers(self) -> pd.DataFrame:
-        """Append a fresh, timestamped follower snapshot to the history file.
+    def fetch_followers(self, keep_snapshots: int = 30) -> pd.DataFrame:
+        """Append a *complete* timestamped follower snapshot to the history file.
 
-        Existing rows are preserved; only follower IDs not already present are
-        appended so the file accumulates snapshots across runs (needed by the
-        unfollower diff).
+        Every follower the account currently has gets one row tagged with this
+        run's timestamp. Unlike the old "only new IDs" approach, this records a
+        full snapshot each run, so :func:`analysis.get_leavers` can diff the
+        latest snapshot against the previous one (see that function).
+
+        Older snapshots beyond ``keep_snapshots`` distinct timestamps are pruned
+        so the file does not grow unbounded; two snapshots are enough for the
+        diff, the rest are kept for history.
         """
         logger.info("Fetching follower snapshot for @%s.", self.username)
         followers = self.client.user_followers(user_id=self._user_id(), amount=0)
         timestamp = datetime.now()
         logger.debug("Instagram returned %d followers.", len(followers))
 
-        follower_df = csv_store.read_followers()
-        existing_ids = set(follower_df["follower_id"])
+        snapshot = pd.DataFrame(
+            [
+                {
+                    "follower_id": follower.pk,
+                    "follower_username": follower.username,
+                    "timestamp": timestamp,
+                }
+                for follower in followers.values()
+            ],
+            columns=csv_store.FOLLOWER_COLUMNS,
+        )
 
-        new_rows = [
-            {
-                "follower_id": follower.pk,
-                "follower_username": follower.username,
-                "timestamp": timestamp,
-            }
-            for follower in followers.values()
-            if follower.pk not in existing_ids
-        ]
+        history = csv_store.read_followers()
+        follower_df = pd.concat([history, snapshot], ignore_index=True)
 
-        if new_rows:
-            follower_df = pd.concat(
-                [follower_df, pd.DataFrame(new_rows)], ignore_index=True
-            )
+        # Keep only the most recent ``keep_snapshots`` distinct snapshots.
+        timestamps = follower_df["timestamp"].astype(str)
+        keep = set(sorted(timestamps.unique())[-keep_snapshots:])
+        follower_df = follower_df[timestamps.isin(keep)].reset_index(drop=True)
 
         logger.info(
-            "Appended %d new follower(s); %d total rows in history.",
-            len(new_rows),
-            len(follower_df),
+            "Recorded snapshot of %d follower(s); %d distinct snapshots in history.",
+            len(snapshot),
+            follower_df["timestamp"].astype(str).nunique(),
         )
         csv_store.write_followers(follower_df)
         return follower_df
