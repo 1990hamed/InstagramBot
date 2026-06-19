@@ -1,0 +1,45 @@
+[project]
+name = "instagrambot"
+version = "0.1.0"
+description = "Daily Instagram analytics + Telegram reporting bot"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.13"
+dependencies = [
+    "instagrapi>=2.16.0",
+    "pandas>=3.0.3",
+    "pillow>=12.2.0",
+    "python-dotenv>=1.2.2",
+    "python-telegram-bot>=21",
+    "schedule>=1.2.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.0",
+    "ruff>=0.15.17",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.21,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "instabot"
+module-root = ""
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B", "C4", "N", "PTH"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
