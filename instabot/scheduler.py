@@ -14,6 +14,7 @@ from instabot.instagram import analysis
 from instabot.instagram.client import InstagramClient
 from instabot.instagram.collectors import Collector
 from instabot.logging_config import get_logger
+from instabot.storage import csv_store
 from instabot.telegram_report import reporter
 
 load_dotenv()
@@ -30,6 +31,10 @@ def run_daily_job() -> dict:
     """Run one full pipeline pass and push a report to Telegram."""
     logger.info("===== Starting daily pipeline for @%s =====", HOME_USERNAME)
     try:
+        # Scope all storage to this account so switching INSTAGRAM_HOME_USERNAME
+        # never mixes another account's follower history into this run.
+        csv_store.set_account(HOME_USERNAME)
+
         ig = InstagramClient(HOME_USERNAME)
         ig.sign_in()
 
