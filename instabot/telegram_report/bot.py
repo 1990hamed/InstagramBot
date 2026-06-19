@@ -25,6 +25,7 @@ from telegram.ext import (
 )
 
 from instabot.logging_config import get_logger
+from instabot.storage import csv_store
 from instabot.telegram_report import chat_store, sections
 
 load_dotenv()
@@ -109,6 +110,11 @@ def build_application() -> Application:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN must be set in the environment.")
+
+    # Serve sections from the configured home account's data folder.
+    csv_store.set_account(
+        os.getenv("INSTAGRAM_HOME_USERNAME") or os.getenv("INSTAGRAM_USERNAME")
+    )
 
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start))
