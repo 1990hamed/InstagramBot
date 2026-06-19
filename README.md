@@ -64,8 +64,11 @@ uv run python main.py --bot        # interactive Telegram bot (serves sections o
 - `instabot/logging_config.py` — console + rotating-file logging (`Logs/`).
 - `main.py` — entry point dispatching the run modes above.
 
-Collected data is written to `Data/*.csv`. The unfollower diff relies on
-`Data/followers_data.csv` accumulating timestamped snapshots across runs.
+Collected data is partitioned per account under `Data/<account>/*.csv`, so
+switching `INSTAGRAM_HOME_USERNAME` keeps each account's history separate (and
+switching back picks it up again). Unfollowers are detected by diffing the two
+most recent complete follower snapshots in `Data/<account>/followers_data.csv`.
+The Telegram chat id stays account-agnostic at `Data/telegram_chat.json`.
 
 ## Development
 
