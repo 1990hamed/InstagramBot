@@ -1,58 +1,96 @@
-8# CLAUDE.md
+# CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project status
+## What this is
 
-This is a **fresh `uv` scaffold** for an Instagram analytics + Telegram reporting bot. `main.py` and `README.md` are currently empty — the real implementation is being migrated/refactored here.
+A bot that runs daily, analyzes a home Instagram account, and reports the results to Telegram. It is a working implementation organized as the `instabot` package. The five capabilities are all wired up:
 
-The prior, working implementation lives in a **separate legacy folder**: `e:\My Workspace\Projects\InstagramBot---\` (a Poetry project). It is the source of truth for existing behavior and must be read before rewriting anything. Treat this `InstagramBot` directory as the destination for refactored code.
+1. **Unfollowers** — who left since the last scan (24h diff over follower snapshots).
+2. **Active followers** — heavy likers/commenters.
+3. **Ghost followers** — followers with near-zero interaction.
+4. **Story/post viewing** — marks the home account's own stories and recent posts as seen daily.
+5. **Telegram reporting** — pushes a daily report and serves sections on demand via an inline-keyboard bot.
 
-## Goal
-
-Build a bot that runs daily and reports to a Telegram account:
-1. Detect **unfollowers** (who left since the last scan).
-2. Detect **active followers** (those who like/comment a lot).
-3. Detect **ghost followers** (followers with near-zero interaction).
-4. **View** the home account's stories and posts daily.
-5. **Report** all of the above to Telegram.
-
-Sections 1–4 (Instagram side) exist in the legacy folder. The **Telegram reporting side is unbuilt** — `telegramBot.py` there is only a generic echo/keyboard demo, not wired to any Instagram data.
+> Historical origin: an earlier Poetry-based prototype lives at `e:\My Workspace\Projects\InstagramBot---\`. It is no longer the source of truth — the current `instabot` package is. Only consult it for archaeology, not for behavior.
 
 ## Tooling & commands
 
-This project uses **`uv`** (not Poetry — the legacy folder uses Poetry). Python **3.13** is pinned in `.python-version`.
+Uses **`uv`**. Python **3.13** is pinned in `.python-version`.
 
 ```bash
 uv sync                      # install deps + dev group into .venv
-uv run python main.py        # run the app
-uv run pytest                # run tests (testpaths = ["tests"], dir not yet created)
-uv run pytest tests/test_x.py::test_name   # run a single test
+uv run python main.py        # one-off pipeline run (collect → analyze → report)
+uv run python main.py --schedule   # run once, then daily at DAILY_RUN_AT
+uv run python main.py --bot        # interactive Telegram bot (long-polling)
+uv run python -m instabot.telegram_report.bot   # same interactive bot, directly
+uv run pytest                # run tests
+uv run pytest tests/test_chat_store.py::test_save_then_load_round_trips   # single test
 uv run ruff check .          # lint
 uv run ruff check . --fix    # lint + autofix
 uv run ruff format .         # format (double quotes, spaces)
 ```
 
-Ruff config (in `pyproject.toml`): line-length 88, target py313, rules `E,W,F,I,UP,B,C4,N,PTH` with `E501` ignored. Note `PTH` is enabled — prefer `pathlib.Path` over `os.path`/`os` filesystem calls (the legacy code uses `os.path`/`os.makedirs`/`os.remove`; these should become `Path` when refactored).
+Ruff config (in `pyproject.toml`): line-length 88, target py313, rules `E,W,F,I,UP,B,C4,N,PTH` with `E501` ignored. `PTH` is enabled — use `pathlib.Path`, not `os.path`. The codebase already follows this.
 
-Build backend is `uv_build` with `module-name = "src"`, `module-root = ""` — i.e. package code is expected under a `src/` module.
+Build backend is `uv_build` with `module-name = "instabot"`, `module-root = ""` — package code lives under `instabot/`.
 
-## Legacy code architecture (to refactor)
 
-All paths below are under `e:\My Workspace\Projects\InstagramBot---\`.
 
-- **`InstagramBot/Bot.py`** — the core. A single `InstagramBot` class built on `instagrapi.Client`:
-  - **Auth/session**: `sign_in` → `login_with_session` (reuses `session.json`) or `first_time_login`. Robust exception handling in `handle_exception` for the full range of `instagrapi` login challenges (`ChallengeRequired`, `FeedbackRequired`, `PleaseWaitFewMinutes`, `BadPassword`, etc.), with a `freeze(reason, hours, days)` that `time.sleep`s the account through cooldowns. Credentials come from `.env` (`INSTAGRAM_USERNAME`, `INSTAGRAM_PASSWORD`).
-  - **Data collection → CSV** (under `Data/`): `fetch_followers` (followers + timestamp → `followers_data.csv`), `fetch_media_interactions` (paginates own media, tallies per-user like/comment counts → `interactions_data.csv`).
-  - **Analysis**: `classify_users` derives active/ghost users from interaction counts vs. thresholds (active = ≥50% of media count, ghost = ≤1%) → `active_users.csv` / `ghost_users.csv`. `get_leavers` diffs old vs. recent follower snapshots (24h window) → `unfollower_data.csv`.
-  - **`view`** is an empty stub (story/post viewing not implemented in this class).
-  - **`main`** wires `schedule.every(...).hours.do(...)` jobs (currently commented out) into a polling loop. Scheduling via the `schedule` library is the intended runtime model.
-- **`InstagramBot/story_viewer.py`** — a standalone script (not a method) experimenting with `cl.user_stories` / `cl.story_viewers`. Imports a `config` module (not present) rather than `.env`. The "view stories/posts daily" feature should be folded into the bot proper.
-- **`TelegramBot/telegramBot.py`** — a `pyTelegramBotAPI` (`telebot`) echo/keyboard demo. Token from `.env` (`API_TOKEN`). Not connected to Instagram data — needs to be replaced with real reporting (read the analysis CSVs and push summaries to Telegram).
-- Legacy `pyproject.toml` lists **both** `python-telegram-bot` and `pytelegrambotapi`; only `telebot` (pytelegrambotapi) is actually used. The current `uv` project has **no Telegram dependency yet** — one must be added when building the Telegram side.
 
-## Key gotchas
+## Configuration (`.env`)
 
-- The data pipeline is **CSV-file based**, passed between collection and analysis steps via the `Data/` directory. Snapshot-diffing for unfollowers depends on `followers_data.csv` accumulating timestamped rows across runs — don't overwrite history.
-- `instagrapi` actions trigger rate-limits/challenges aggressively; the `freeze`/`handle_exception` machinery exists for that reason and should be preserved through any refactor.
-- Two dependency managers exist across the two folders (uv here, Poetry in legacy) — when porting deps, translate them into the `uv` `pyproject.toml`, don't copy the Poetry block.
+Loaded via `python-dotenv` (each module calls `load_dotenv()`).
+
+- `INSTAGRAM_USERNAME` / `INSTAGRAM_PASSWORD` — login credentials.
+- `INSTAGRAM_HOME_USERNAME` — account to analyze; falls back to `INSTAGRAM_USERNAME`.
+- `DAILY_RUN_AT` — daily run time, `HH:MM` 24h local (default `09:00`).
+- `TELEGRAM_BOT_TOKEN` — Telegram bot token (required for any Telegram action).
+- `LOG_LEVEL` — console log level (default `INFO`).
+
+There is **no** `TELEGRAM_CHAT_ID`: the bot captures the chat id automatically the first time you message it (`/start`) and saves it to `Data/telegram_chat.json`. The scheduled report reads it back from there.
+
+## Architecture
+
+Entry point is [main.py](main.py): one-off run by default, `--schedule` for daily, `--bot` for the interactive bot.
+
+- [instabot/scheduler.py](instabot/scheduler.py) — orchestration. `run_daily_job()` ties the pipeline together: sign in → collect followers → collect interactions → view stories/posts → classify → diff unfollowers → push Telegram report. `main()` runs it once then loops with the `schedule` library at `DAILY_RUN_AT`.
+- [instabot/instagram/client.py](instabot/instagram/client.py) — `InstagramClient`, an `instagrapi.Client` wrapper. Session reuse via `session.json` at project root; `sign_in` → `login_with_session` / `first_time_login`. `handle_exception` covers the full range of login challenges (`ChallengeRequired`, `FeedbackRequired`, `PleaseWaitFewMinutes`, `BadPassword`, etc.) and `freeze(reason, hours, days)` `time.sleep`s the account through cooldowns. **Preserve this machinery through any refactor** — Instagram rate-limits/challenges aggressively.
+- [instabot/instagram/collectors.py](instabot/instagram/collectors.py) — `Collector`: `fetch_followers` (appends timestamped follower rows to history), `fetch_media_interactions` (paginates own media, tallies per-user like/comment counts), `view_stories_and_posts` (marks stories + recent posts seen, returns counts).
+- [instabot/instagram/analysis.py](instabot/instagram/analysis.py) — `classify_users` (classifies on combined likes + comments: active = ≥ `ACTIVE_RATIO`×media count; ghost = ≤ `GHOST_RATIO`×media count) and `get_leavers` (24h diff of old vs. recent follower snapshots). Both persist CSVs and return summary dicts.
+- [instabot/storage/csv_store.py](instabot/storage/csv_store.py) — all CSV persistence under project-root `Data/`. Read/write helpers per file; empty frames with fixed column schemas when a file is missing.
+- [instabot/telegram_report/](instabot/telegram_report/) — built on **`python-telegram-bot`** (async):
+  - `reporter.py` — `send_report(summary)` (sync wrapper around async send) pushes the daily HTML report to the saved chat.
+  - `bot.py` — interactive inline-keyboard menu; each button serves one section; auto-saves the chat id on any message.
+  - `sections.py` — renders each section as Telegram HTML, reading the latest CSVs (so sections work between scheduled runs). `build_full_report(summary)` builds the all-in-one daily message.
+  - `chat_store.py` — persists/loads the chat id in `Data/telegram_chat.json`.
+- [instabot/logging_config.py](instabot/logging_config.py) — `get_logger(__name__)` everywhere; `setup_logging()` is idempotent. Console at `LOG_LEVEL`, rotating file at DEBUG under `Logs/instabot.log`. Noisy libs (`instagrapi`, `httpx`, …) pinned to WARNING.
+
+## Data files (`Data/`)
+
+The pipeline is CSV-file based; analysis steps read what collection wrote.
+
+- `followers_data.csv` — `follower_id, follower_username, timestamp`. **History-accumulating**: new snapshots are appended, old rows preserved. The unfollower diff depends on this — don't overwrite history.
+- `interactions_data.csv` — `follower_id, follower_username, like, comment`.
+- `active_users.csv` / `ghost_users.csv` — classification outputs (interaction schema).
+- `unfollower_data.csv` — latest detected unfollowers (follower schema).
+- `telegram_chat.json` — `{"chat_id": "..."}`.
+
+## Gotchas
+
+- Preserve the `freeze` / `handle_exception` cooldown logic — it exists because `instagrapi` triggers challenges/rate-limits aggressively.
+- The follower history file must accumulate, not be overwritten — the 24h unfollower diff reads multiple snapshots out of it.
+- Telegram sends are async (`python-telegram-bot`); the scheduler uses the sync `send_report` wrapper. Don't call `asyncio.run` inside an already-running loop.
+
+## Branching & Commits
+
+- [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): description`
+  - Types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`
+  - Example: `feat(telegram): add ghost-followers section to daily report`
+- Before pushing: `uv run ruff check .` and `uv run pytest` must both pass.
+
+## Git Rules
+
+- Always commit using the repo's configured git identity.
+- Do not override user.name or user.email when committing.
+- Do not add `Co-Authored-By` trailers or any Claude/Anthropic attribution to commit messages or PR bodies.
