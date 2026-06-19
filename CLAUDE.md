@@ -57,8 +57,8 @@ Entry point is [main.py](main.py): one-off run by default, `--schedule` for dail
 - [instabot/scheduler.py](instabot/scheduler.py) — orchestration. `run_daily_job()` ties the pipeline together: sign in → collect followers → collect interactions → view stories/posts → classify → diff unfollowers → push Telegram report. `main()` runs it once then loops with the `schedule` library at `DAILY_RUN_AT`.
 - [instabot/instagram/client.py](instabot/instagram/client.py) — `InstagramClient`, an `instagrapi.Client` wrapper. Session reuse via `session.json` at project root; `sign_in` → `login_with_session` / `first_time_login`. `handle_exception` covers the full range of login challenges (`ChallengeRequired`, `FeedbackRequired`, `PleaseWaitFewMinutes`, `BadPassword`, etc.) and `freeze(reason, hours, days)` `time.sleep`s the account through cooldowns. **Preserve this machinery through any refactor** — Instagram rate-limits/challenges aggressively.
 - [instabot/instagram/collectors.py](instabot/instagram/collectors.py) — `Collector`: `fetch_followers` (appends timestamped follower rows to history), `fetch_media_interactions` (paginates own media, tallies per-user like/comment counts), `view_stories_and_posts` (marks stories + recent posts seen, returns counts).
-- [instabot/instagram/analysis.py](instabot/instagram/analysis.py) — `classify_users` (classifies on combined likes + comments: active = ≥ `ACTIVE_RATIO`×media count; ghost = ≤ `GHOST_RATIO`×media count) and `get_leavers` (24h diff of old vs. recent follower snapshots). Both persist CSVs and return summary dicts.
-- [instabot/storage/csv_store.py](instabot/storage/csv_store.py) — all CSV persistence under project-root `Data/`. Read/write helpers per file; empty frames with fixed column schemas when a file is missing.
+- [instabot/instagram/analysis.py](instabot/instagram/analysis.py) — `classify_users` (classifies on combined likes + comments: active = ≥ `ACTIVE_RATIO`×media count; ghost = ≤ `GHOST_RATIO`×media count) and `get_leavers` (diffs the two most recent follower snapshots: anyone in the previous snapshot but not the latest unfollowed). Both persist CSVs and return summary dicts.
+- [instabot/storage/csv_store.py](instabot/storage/csv_store.py) — all CSV persistence, **partitioned per account** under `Data/<account>/`. The active account is process-global: it defaults to a sanitized `INSTAGRAM_HOME_USERNAME` and is set explicitly via `set_account()` by the scheduler and the bot. Path constants are now functions (`followers_csv()`, etc.). Read/write helpers per file; empty frames with fixed column schemas when a file is missing.
 - [instabot/telegram_report/](instabot/telegram_report/) — built on **`python-telegram-bot`** (async):
   - `reporter.py` — `send_report(summary)` (sync wrapper around async send) pushes the daily HTML report to the saved chat.
   - `bot.py` — interactive inline-keyboard menu; each button serves one section; auto-saves the chat id on any message.
@@ -66,20 +66,25 @@ Entry point is [main.py](main.py): one-off run by default, `--schedule` for dail
   - `chat_store.py` — persists/loads the chat id in `Data/telegram_chat.json`.
 - [instabot/logging_config.py](instabot/logging_config.py) — `get_logger(__name__)` everywhere; `setup_logging()` is idempotent. Console at `LOG_LEVEL`, rotating file at DEBUG under `Logs/instabot.log`. Noisy libs (`instagrapi`, `httpx`, …) pinned to WARNING.
 
-## Data files (`Data/`)
+## Data files (`Data/<account>/`)
 
-The pipeline is CSV-file based; analysis steps read what collection wrote.
+The pipeline is CSV-file based; analysis steps read what collection wrote. All
+follower/interaction files live under a **per-account** folder
+(`Data/<account>/`, account = sanitized lowercase username) so switching
+`INSTAGRAM_HOME_USERNAME` never mixes histories. The chat id is account-agnostic
+and stays at the `Data/` root.
 
-- `followers_data.csv` — `follower_id, follower_username, timestamp`. **History-accumulating**: new snapshots are appended, old rows preserved. The unfollower diff depends on this — don't overwrite history.
+- `followers_data.csv` — `follower_id, follower_username, timestamp`. **One complete snapshot per run** (every current follower gets a row tagged with that run's timestamp); pruned to the last `keep_snapshots` (default 30) snapshots. The unfollower diff compares the two most recent snapshots — keep at least two.
 - `interactions_data.csv` — `follower_id, follower_username, like, comment`.
 - `active_users.csv` / `ghost_users.csv` — classification outputs (interaction schema).
 - `unfollower_data.csv` — latest detected unfollowers (follower schema).
-- `telegram_chat.json` — `{"chat_id": "..."}`.
+- `telegram_chat.json` — `{"chat_id": "..."}` (at `Data/` root, not per-account).
 
 ## Gotchas
 
 - Preserve the `freeze` / `handle_exception` cooldown logic — it exists because `instagrapi` triggers challenges/rate-limits aggressively.
-- The follower history file must accumulate, not be overwritten — the 24h unfollower diff reads multiple snapshots out of it.
+- Storage is account-scoped. Anything that reads/writes CSVs outside the scheduler must call `csv_store.set_account(...)` first (the bot does this in `build_application()`); otherwise it falls back to the `INSTAGRAM_HOME_USERNAME` default resolved at import.
+- The follower history must keep at least the two most recent complete snapshots — the unfollower diff compares the latest against the previous one.
 - Telegram sends are async (`python-telegram-bot`); the scheduler uses the sync `send_report` wrapper. Don't call `asyncio.run` inside an already-running loop.
 
 ## Branching & Commits
